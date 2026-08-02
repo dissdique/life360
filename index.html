@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Circle</title>
+<meta name="viewport" content="width=600, height=600, user-scalable=no">
+<link rel="icon" type="image/png" href="https://github.com/dissdique.png">
+<link rel="shortcut icon" type="image/png" href="https://github.com/dissdique.png">
+<link rel="apple-touch-icon" href="https://github.com/dissdique.png">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+  html,body{margin:0;padding:0;width:600px;height:600px;background:#000;overflow:hidden;
+    font-family:'Segoe UI',system-ui,sans-serif;color:#fff;}
+  #app{position:relative;width:600px;height:600px;background:#000;}
+
+  /* ---------- Donate splash ---------- */
+  #splash{position:absolute;inset:0;background:#000;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;z-index:50;transition:opacity .4s ease;}
+  #splash.hidden{opacity:0;pointer-events:none;}
+  #splash img.avatar{width:72px;height:72px;border-radius:50%;
+    border:1px solid #2a2a2a;box-shadow:0 0 18px rgba(120,200,255,0.25);margin-bottom:14px;}
+  #splash .app-name{font-size:20px;letter-spacing:2px;font-weight:300;color:#dfefff;
+    text-transform:uppercase;margin-bottom:6px;}
+  #splash .app-sub{font-size:12px;color:#4d6a80;margin-bottom:26px;letter-spacing:1px;}
+  #splash .donate-tag{display:flex;align-items:center;gap:8px;padding:8px 16px;
+    border:1px solid #2a4a5a;border-radius:20px;color:#7fd4ff;font-size:12px;
+    letter-spacing:.5px;outline:none;}
+  #splash .donate-tag.selected{background:rgba(127,212,255,0.12);
+    box-shadow:0 0 10px rgba(127,212,255,0.35);}
+  #splash .hint{position:absolute;bottom:18px;font-size:10px;color:#33475a;letter-spacing:1px;}
+
+  /* ---------- Map layer ---------- */
+  #map{position:absolute;inset:0;filter:invert(1) hue-rotate(180deg) brightness(0.95) contrast(1.05);}
+  #hud-top{position:absolute;top:0;left:0;right:0;padding:10px 14px;z-index:20;
+    background:linear-gradient(#000 0%, rgba(0,0,0,0) 100%);display:flex;justify-content:space-between;}
+  #hud-top .title{font-size:13px;letter-spacing:2px;color:#7fd4ff;text-transform:uppercase;}
+  #hud-top .count{font-size:11px;color:#4d6a80;}
+
+  /* ---------- Member list (D-pad focus) ---------- */
+  #memberbar{position:absolute;bottom:0;left:0;right:0;z-index:20;padding:10px 12px 14px;
+    background:linear-gradient(rgba(0,0,0,0) 0%, #000 70%);display:flex;gap:8px;overflow:hidden;}
+  .member-chip{flex:1;background:rgba(10,20,25,0.7);border:1px solid #1c3444;border-radius:10px;
+    padding:6px 8px;font-size:10px;color:#9fd8ff;outline:none;}
+  .member-chip.focused{border-color:#7fd4ff;box-shadow:0 0 8px rgba(127,212,255,0.4);
+    background:rgba(127,212,255,0.08);}
+  .member-chip .name{display:block;font-size:11px;color:#fff;margin-bottom:2px;}
+  .member-chip .meta{display:block;color:#3d6478;}
+
+  #toast{position:absolute;top:44px;left:50%;transform:translateX(-50%);z-index:30;
+    background:rgba(10,20,25,0.9);border:1px solid #2a4a5a;border-radius:8px;
+    padding:6px 12px;font-size:11px;color:#7fd4ff;opacity:0;transition:opacity .3s;}
+  #toast.show{opacity:1;}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- DONATE / SPLASH SCREEN -->
+  <div id="splash">
+    <img class="avatar" src="https://github.com/dissdique.png" alt="dissdique">
+    <div class="app-name">Circle</div>
+    <div class="app-sub">Life360 · glasses view</div>
+    <div class="donate-tag selected" id="donateTag" tabindex="0">♥ Support this app</div>
+    <div class="hint">Enter · select&nbsp;&nbsp;&nbsp;↓ · continue to map</div>
+  </div>
+
+  <!-- MAP VIEW -->
+  <div id="map"></div>
+  <div id="hud-top">
+    <div class="title">Circle</div>
+    <div class="count" id="memberCount">0 members</div>
+  </div>
+  <div id="memberbar"></div>
+  <div id="toast"></div>
+
+</div>
+
+<script>
+/* =========================================================
+   CONFIG
+   ========================================================= */
+// Swap this for your real backend proxy once it's live
+// (mirrors the Bearing / Police Radar pattern: MRBD -> your Render proxy -> Life360)
+const CIRCLE_ENDPOINT = null; // e.g. "https://your-life360-proxy.onrender.com/circle";
+const PAYPAL_BUTTON_ID = "E3XCQ9BMJH35N";
+const DONATE_SMS_BODY = encodeURIComponent(
+  "Sending a tip: https://www.paypal.com/donate?hosted_button_id=" + PAYPAL_BUTTON_ID
+);
+
+// Mock data used until CIRCLE_ENDPOINT is wired up
+const MOCK_MEMBERS = [
+  { id: "m1", name: "Alex",  lat: 42.8864, lng: -78.8784, battery: 82, moving: false, updated: "2m ago" },
+  { id: "m2", name: "Sam",   lat: 42.8901, lng: -78.8650, battery: 41, moving: true,  updated: "just now" },
+  { id: "m3", name: "Jordan",lat: 42.8790, lng: -78.8900, battery: 67, moving: false, updated: "9m ago" }
+];
+
+/* =========================================================
+   STATE
+   ========================================================= */
+let members = [];
+let focusIndex = 0;
+let onSplash = true;
+let map, markerLayer;
+
+/* =========================================================
+   MAP SETUP
+   ========================================================= */
+function initMap(centerLat, centerLng) {
+  map = L.map('map', {
+    zoomControl: false, attributionControl: false,
+    dragging: false, scrollWheelZoom: false, doubleClickZoom: false,
+    boxZoom: false, keyboard: false, touchZoom: false
+  }).setView([centerLat, centerLng], 13);
+
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+  markerLayer = L.layerGroup().addTo(map);
+}
+
+function renderMembers() {
+  markerLayer.clearLayers();
+  const bar = document.getElementById('memberbar');
+  bar.innerHTML = '';
+  document.getElementById('memberCount').textContent = members.length + ' member' + (members.length===1?'':'s');
+
+  members.forEach((m, i) => {
+    const dot = L.circleMarker([m.lat, m.lng], {
+      radius: 7, color: m.moving ? '#7fffb0' : '#7fd4ff',
+      fillColor: m.moving ? '#7fffb0' : '#7fd4ff', fillOpacity: 0.9, weight: 1
+    }).addTo(markerLayer);
+
+    const chip = document.createElement('div');
+    chip.className = 'member-chip' + (i === focusIndex ? ' focused' : '');
+    chip.innerHTML = `<span class="name">${m.name}</span><span class="meta">${m.moving ? 'moving' : 'stationary'} · ${m.battery}% · ${m.updated}</span>`;
+    bar.appendChild(chip);
+  });
+
+  if (members[focusIndex]) {
+    map.panTo([members[focusIndex].lat, members[focusIndex].lng]);
+  }
+}
+
+async function loadMembers() {
+  if (!CIRCLE_ENDPOINT) {
+    members = MOCK_MEMBERS;
+    showToast('mock data · connect proxy for live');
+  } else {
+    try {
+      const res = await fetch(CIRCLE_ENDPOINT);
+      members = await res.json();
+    } catch (e) {
+      members = MOCK_MEMBERS;
+      showToast('proxy unreachable · showing mock');
+    }
+  }
+  const avgLat = members.reduce((s,m)=>s+m.lat,0) / members.length;
+  const avgLng = members.reduce((s,m)=>s+m.lng,0) / members.length;
+  if (!map) initMap(avgLat, avgLng);
+  renderMembers();
+}
+
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'), 2200);
+}
+
+/* =========================================================
+   DONATE TAG
+   ========================================================= */
+function openDonate() {
+  // MRBD webview can't reliably open external PayPal URLs directly,
+  // so route through Messages (sms:) pre-filled with the donate link,
+  // same pattern used in Frogged / other apps.
+  window.location.href = 'sms:?body=' + DONATE_SMS_BODY;
+}
+
+/* =========================================================
+   D-PAD NAVIGATION (arrow keys + Enter only, no touch/mouse)
+   ========================================================= */
+document.addEventListener('keydown', (e) => {
+  if (onSplash) {
+    if (e.key === 'Enter') {
+      openDonate();
+    } else if (e.key === 'ArrowDown') {
+      onSplash = false;
+      document.getElementById('splash').classList.add('hidden');
+      loadMembers();
+    }
+    return;
+  }
+
+  if (!members.length) return;
+
+  if (e.key === 'ArrowLeft') {
+    focusIndex = (focusIndex - 1 + members.length) % members.length;
+    renderMembers();
+  } else if (e.key === 'ArrowRight') {
+    focusIndex = (focusIndex + 1) % members.length;
+    renderMembers();
+  } else if (e.key === 'Enter') {
+    const m = members[focusIndex];
+    map.setView([m.lat, m.lng], 15);
+    showToast(m.name + ' · ' + m.updated);
+  } else if (e.key === 'ArrowUp') {
+    // back to splash
+    onSplash = true;
+    document.getElementById('splash').classList.remove('hidden');
+  }
+});
+
+// Splash starts focused for immediate Enter support
+window.addEventListener('load', () => {
+  document.getElementById('donateTag').focus();
+});
+</script>
+</body>
+</html>
